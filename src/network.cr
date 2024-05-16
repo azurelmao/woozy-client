@@ -22,7 +22,7 @@ struct Woozy::Client
       Log.info &.emit "Handshake succeeded"
     when server_disconnect_packet = packet.server_disconnect_packet
       Log.info &.emit "Disconnected", cause: server_disconnect_packet.cause
-      stop
+      self.stop
     end
   end
 end

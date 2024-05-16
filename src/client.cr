@@ -15,19 +15,18 @@ struct Woozy::Client
 
   def start : Nil
     command_channel = Channel(Command).new
-    spawn key_loop(command_channel)
+    spawn self.key_loop(command_channel)
     Fiber.yield
 
     packet_channel = Channel(Packet).new
-    spawn packet_loop(packet_channel)
+    spawn self.packet_loop(packet_channel)
     Fiber.yield
 
     # render_channel = Channel().new
     # spawn render_loop
     # Fiber.yield
 
-    @tcp_socket.send ClientHandshakePacket.new @username
-
+    self.clear_line
     loop do
       select
       when timeout(1.second)
@@ -59,7 +58,10 @@ struct Woozy::Client
   end
 
   def update : Nil
-    if @tick == 5
+    case @tick
+    when 0
+      @tcp_socket.send ClientHandshakePacket.new @username
+    when 5
       @tcp_socket.send ClientMessagePacket.new "hello"
     end
 
@@ -68,7 +70,12 @@ struct Woozy::Client
 
   def stop : Nil
     @tcp_socket.send ClientDisconnectPacket.new
-    @stop_channel.send true
+
+    select
+    when @stop_channel.send true
+    else
+    end
+
     exit
   end
 end
@@ -98,7 +105,7 @@ begin
 
   client.start
 rescue ex : Socket::ConnectError
-  Log.error{"Could not connect to '#{host}:#{port}'"}
+  Log.fatal { "Could not connect to '#{host}:#{port}'" }
 end
 
 
