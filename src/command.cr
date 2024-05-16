@@ -9,7 +9,7 @@ struct Woozy::Client
     Left
   end
 
-  def set_terminal_mode
+  def set_terminal_mode : Nil
     before = Crystal::System::FileDescriptor.tcgetattr STDIN.fd
     mode = before
     mode.c_lflag &= ~LibC::ICANON
@@ -27,7 +27,7 @@ struct Woozy::Client
 
   alias Command = String
 
-  def key_loop(channel : Channel(Command))
+  def key_loop(channel : Channel(Command)) : Nil
     self.set_terminal_mode
 
     loop do
@@ -77,9 +77,7 @@ struct Woozy::Client
     end
   end
 
-  def handle_key(channel : Channel(Command), key : Char | Key)
-    print "\e[2K\r"
-
+  def handle_key(channel : Channel(Command), key : Char | Key) : Nil
     case key
     when Char
       @command_history.write_at_cursor(key)
@@ -98,18 +96,24 @@ struct Woozy::Client
     when .left?
       @command_history.move_cursor_left
     end
-
-    print "> #{@command_history.current_record.join}\r\e[#{2 + @command_history.cursor_index}C"
   end
 
-  def handle_command(command : String)
+  def handle_command(command : String) : Nil
     case command
     when "stop"
-      stop
+      self.stop
     when "hello"
       Log.info { "world!" }
     else
       Log.error { "Unknown command!" }
     end
+  end
+
+  def clear_line : Nil
+    print "\e[2K\r"
+  end
+
+  def print_current_line : Nil
+    print "> #{@command_history.current_record.join}\r\e[#{2 + @command_history.cursor_index}C"
   end
 end

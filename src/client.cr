@@ -5,6 +5,7 @@ require "./network"
 struct Woozy::Client
   def initialize(host : String, port : Int32)
     @tcp_socket = TCPSocket.new host, port
+    @stop_channel = Channel(Bool).new
     @username = "jeb"
 
     @command_history = Chronicle.new
@@ -12,7 +13,7 @@ struct Woozy::Client
     @tick = 0
   end
 
-  def start
+  def start : Nil
     command_channel = Channel(Command).new
     spawn key_loop(command_channel)
     Fiber.yield
@@ -30,11 +31,12 @@ struct Woozy::Client
     loop do
       select
       when timeout(1.second)
+        self.clear_line
+
         loop do
           select
-          when packet = packet_channel.receive?
-            break unless packet
-            handle_packet(packet)
+          when packet = packet_channel.receive
+            self.handle_packet(packet)
           else
             break
           end
@@ -43,18 +45,20 @@ struct Woozy::Client
         loop do
           select
           when command = command_channel.receive
-            handle_command(command)
+            self.handle_command(command)
           else
             break
           end
         end
 
         update
+
+        self.print_current_line
       end
     end
   end
 
-  def update
+  def update : Nil
     if @tick == 5
       @tcp_socket.send ClientMessagePacket.new "hello"
     end
@@ -62,9 +66,9 @@ struct Woozy::Client
     @tick += 1
   end
 
-  def stop
+  def stop : Nil
     @tcp_socket.send ClientDisconnectPacket.new
-    @tcp_socket.close
+    @stop_channel.send true
     exit
   end
 end
