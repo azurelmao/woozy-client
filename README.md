@@ -1,6 +1,6 @@
 # woozy-client
 
-TODO: Write a description here
+WIP voxel-game client.
 
 ## Installation
 

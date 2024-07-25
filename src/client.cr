@@ -1,111 +1,251 @@
 require "woozy"
-require "./command"
-require "./network"
 
 struct Woozy::Client
-  def initialize(host : String, port : Int32)
-    @tcp_socket = TCPSocket.new host, port
-    @stop_channel = Channel(Bool).new
+  def initialize
+    @connection = TCPSocket.new
+    @packet_channel = Channel(Packet).new
     @username = "jeb"
 
-    @command_history = Chronicle.new
+    @char_channel = Channel(Chars).new
+    @console_input = Array(Char).new
+    @console_cursor = 0
 
     @tick = 0
   end
 
+  def set_terminal_mode : Nil
+    before = Crystal::System::FileDescriptor.tcgetattr STDIN.fd
+    mode = before
+    mode.c_lflag &= ~LibC::ICANON
+    mode.c_lflag &= ~LibC::ECHO
+    mode.c_lflag &= ~LibC::ISIG
+
+    at_exit do
+      Crystal::System::FileDescriptor.tcsetattr(STDIN.fd, LibC::TCSANOW, pointerof(before))
+    end
+
+    if Crystal::System::FileDescriptor.tcsetattr(STDIN.fd, LibC::TCSANOW, pointerof(mode)) != 0
+      raise IO::Error.from_errno "tcsetattr"
+    end
+  end
+
+  def server_fiber : Nil
+    bytes = Bytes.new(Packet::MaxSize)
+
+    until @connection.closed?
+      bytes_read, _ = @connection.receive(bytes)
+      break if bytes_read.zero? # Connection was closed
+      packet = Packet.from_bytes(bytes[0...bytes_read].dup)
+      @packet_channel.send(packet)
+    end
+  end
+
+  def handle_packet(packet : Packet) : Nil
+    Log.trace { packet }
+  end
+
+  alias Chars = StaticArray(Char, 4)
+
+  enum KeyboardAction
+    Stop
+    Enter
+    Backspace
+    Delete
+    Up
+    Down
+    Right
+    Left
+  end
+
+  def char_fiber : Nil
+    bytes = Bytes.new(4)
+    loop do
+      bytes_read = STDIN.read(bytes)
+
+      chars = Chars.new('\0')
+      bytes_read.times do |i|
+        chars[i] = bytes[i].chr
+        bytes[i] = 0u8
+      end
+
+      spawn @char_channel.send(chars)
+    end
+  end
+
+  def handle_chars(chars : Chars) : KeyboardAction | Chars?
+    case char0 = chars[0]
+    when '\u{3}', '\u{4}'
+      return KeyboardAction::Stop
+    when '\n' # Enter
+      return KeyboardAction::Enter
+    when '\u{7f}' # Backspace
+      return KeyboardAction::Backspace
+    when '\e'
+      case char1 = chars[1]
+      when '['
+        case char2 = chars[2]
+        when 'A' # Up
+          return KeyboardAction::Up
+        when 'B' # Down
+          return KeyboardAction::Down
+        when 'C' # Right
+          return KeyboardAction::Right
+        when 'D' # Left
+          return KeyboardAction::Left
+        when '3'
+          case char3 = chars[3]
+          when '~' # Delete
+            return KeyboardAction::Delete
+          end
+        end
+      end
+
+      return nil
+    else
+      return chars
+    end
+  end
+
+  def clear_console_input : Nil
+    print "\e[2K\r" # Clears current line, then returns text cursor to origin
+  end
+
+  def update_console_input : Nil
+    print "> #{@console_input.join}\r\e[#{2 + @console_cursor}C"
+  end
+
+  def handle_keyboard_action(keyboard_action : KeyboardAction | Chars) : String?
+    case keyboard_action
+    when KeyboardAction::Stop
+      self.stop
+    when KeyboardAction::Enter
+      command = @console_input.join
+      @console_input.clear
+      @console_cursor = 0
+      return command
+    when KeyboardAction::Backspace
+      if (index = @console_cursor - 1) >= 0
+        @console_input.delete_at(index)
+        @console_cursor = Math.max(0, @console_cursor - 1)
+      end
+    when KeyboardAction::Delete
+      if (index = @console_cursor) >= 0 && index < @console_input.size
+        @console_input.delete_at(index)
+      end
+    when KeyboardAction::Up
+    when KeyboardAction::Down
+    when KeyboardAction::Right
+      @console_cursor = Math.min(@console_input.size, @console_cursor + 1)
+    when KeyboardAction::Left
+      @console_cursor = Math.max(0, @console_cursor - 1)
+    else
+      chars = keyboard_action.as Chars
+      chars.each do |char|
+        if char != '\0'
+          @console_input.insert(@console_cursor, char)
+          @console_cursor = Math.min(@console_input.size, @console_cursor + 1)
+        end
+      end
+    end
+
+    nil
+  end
+
+  def handle_command(command : Array(String)) : Nil
+    case command[0]?
+    when "hello"
+      Log.info { "world!" }
+    when "stop"
+      self.stop
+    when "join"
+      if (arg = command[1]?)
+        uri = URI.parse("tcp://#{arg}")
+
+        return unless host = uri.host
+
+        @connection.close unless @connection.closed?
+
+        addrinfos = Socket::Addrinfo.tcp(host, uri.port)
+        addrinfos.each do |addrinfo|
+          Log.trace{addrinfo.ip_address}
+
+          begin
+            @connection.connect(addrinfo.ip_address)
+            spawn self.server_fiber
+            @connection.send(ClientHandshakePacket.new(@username))
+            Log.info { "Connected to server successfully" }
+            return
+          rescue ex
+            Log.error(exception: ex) {""}
+          end
+        end
+
+        Log.error &.emit "Could not connect to IP address!", address: arg
+      else
+        Log.error &.emit "Invalid IP address!", address: arg
+      end
+    else
+      Log.error { "Unknown command! - #{command}" }
+    end
+  end
+
   def start : Nil
-    command_channel = Channel(Command).new
-    spawn self.key_loop(command_channel)
-    Fiber.yield
+    self.set_terminal_mode
+    Log.info { "Client started!" }
 
-    packet_channel = Channel(Packet).new
-    spawn self.packet_loop(packet_channel)
-    Fiber.yield
+    self.update_console_input
 
-    # render_channel = Channel().new
-    # spawn render_loop
-    # Fiber.yield
+    spawn self.char_fiber
 
-    self.clear_line
     loop do
       select
-      when timeout(1.second)
-        self.clear_line
-
-        loop do
-          select
-          when packet = packet_channel.receive
-            self.handle_packet(packet)
-          else
-            break
-          end
-        end
-
-        loop do
-          select
-          when command = command_channel.receive
-            self.handle_command(command)
-          else
-            break
-          end
-        end
-
-        update
-
-        self.print_current_line
+      when timeout(50.milliseconds)
+        self.clear_console_input
+        self.update
+        self.update_console_input
       end
     end
   end
 
   def update : Nil
-    case @tick
-    when 0
-      @tcp_socket.send ClientHandshakePacket.new @username
-    when 5
-      @tcp_socket.send ClientMessagePacket.new "hello"
+    # Check for new packets
+    loop do
+      select # Non-blocking, raising receive
+      when packet = @packet_channel.receive
+        self.handle_packet(packet)
+      else
+        break # All packets received
+      end
+    end
+
+    # Check for new chars
+    select
+    when chars = @char_channel.receive
+      if keyboard_action = self.handle_chars(chars)
+        command = self.handle_keyboard_action(keyboard_action)
+        self.handle_command(command.split(" ")) if command
+      end
+    else
     end
 
     @tick += 1
   end
 
-  def stop : Nil
-    @tcp_socket.send ClientDisconnectPacket.new
+  def stop : NoReturn
+    Log.info { "Client stopped!" }
 
-    select
-    when @stop_channel.send true
-    else
-    end
+    # @connection.send(ClientDisconnectPacket.new)
 
     exit
   end
 end
 
-raise "Mismatched number of arguments!" if ARGV.size.odd?
-
-host = "127.0.0.1"
-port = 1234
-
-index = 0
-while index < ARGV.size
-  case ARGV[index]
-  when "-h", "--host"
-    host = ARGV[index + 1]
-  when "-p", "--port"
-    port = ARGV[index + 1].to_i
-  end
-  index += 2
-end
-
 begin
-  client = Woozy::Client.new host, port
-
-  Process.on_terminate do
+  client = Woozy::Client.new
+  client.start
+rescue ex
+  Log.fatal(exception: ex) { "" }
+  if client
     client.stop
   end
-
-  client.start
-rescue ex : Socket::ConnectError
-  Log.fatal { "Could not connect to '#{host}:#{port}'" }
 end
-
-
