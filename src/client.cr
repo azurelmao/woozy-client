@@ -33,15 +33,25 @@ struct Woozy::Client
     bytes = Bytes.new(Packet::MaxSize)
 
     until @connection.closed?
-      bytes_read, _ = @connection.receive(bytes)
-      break if bytes_read.zero? # Connection was closed
-      packet = Packet.from_bytes(bytes[0...bytes_read].dup)
-      @packet_channel.send(packet)
+      begin
+        bytes_read, _ = @connection.receive(bytes)
+        Log.trace{"packet"}
+        break if bytes_read.zero? # Connection was closed
+        packet = Packet.from_bytes(bytes[0...bytes_read].dup)
+        spawn @packet_channel.send(packet)
+      rescue ex
+        Log.trace(exception: ex){""}
+        break
+      end
     end
   end
 
   def handle_packet(packet : Packet) : Nil
-    Log.trace { packet }
+    Log.trace{packet}
+    case
+    when server_disconnect_packet = packet.server_disconnect_packet
+      Log.info &.emit "Disconnected from server", cause: server_disconnect_packet.cause
+    end
   end
 
   alias Chars = StaticArray(Char, 4)
@@ -153,39 +163,38 @@ struct Woozy::Client
 
   def handle_command(command : Array(String)) : Nil
     case command[0]?
+    when "help"
+      Log.info { "Available commands: help, hello, stop, join" }
     when "hello"
       Log.info { "world!" }
     when "stop"
       self.stop
     when "join"
       if (arg = command[1]?)
-        uri = URI.parse("tcp://#{arg}")
-
-        return unless host = uri.host
-
-        @connection.close unless @connection.closed?
-
-        addrinfos = Socket::Addrinfo.tcp(host, uri.port)
-        addrinfos.each do |addrinfo|
-          Log.trace{addrinfo.ip_address}
-
-          begin
-            @connection.connect(addrinfo.ip_address)
-            spawn self.server_fiber
-            @connection.send(ClientHandshakePacket.new(@username))
-            Log.info { "Connected to server successfully" }
-            return
-          rescue ex
-            Log.error(exception: ex) {""}
-          end
-        end
-
-        Log.error &.emit "Could not connect to IP address!", address: arg
+        self.join_server(arg)
       else
-        Log.error &.emit "Invalid IP address!", address: arg
+        Log.error { "Invalid IP address!" }
       end
     else
-      Log.error { "Unknown command! - #{command}" }
+      Log.error { "Unknown command `#{command.join(' ')}` !" }
+    end
+  end
+
+  def join_server(address : String) : Nil
+    uri = URI.parse("tcp://#{address}")
+
+    unless host = uri.host
+      Log.error &.emit "Invalid IP address!", address: address
+      return
+    end
+
+    begin
+      @connection = TCPSocket.new(host, uri.port)
+      @connection.send(ClientHandshakePacket.new(@username))
+      spawn self.server_fiber
+      Log.info &.emit "Connected to server", address: @connection.local_address.address
+    rescue
+      Log.error &.emit "Could not connect to IP address!", address: address
     end
   end
 
@@ -223,7 +232,7 @@ struct Woozy::Client
     when chars = @char_channel.receive
       if keyboard_action = self.handle_chars(chars)
         command = self.handle_keyboard_action(keyboard_action)
-        self.handle_command(command.split(" ")) if command
+        self.handle_command(command.split(' ')) if command && !command.blank? && !command.empty?
       end
     else
     end
@@ -231,10 +240,10 @@ struct Woozy::Client
     @tick += 1
   end
 
-  def stop : NoReturn
+  def stop #: NoReturn
     Log.info { "Client stopped!" }
 
-    # @connection.send(ClientDisconnectPacket.new)
+    @connection.send(ClientDisconnectPacket.new)
 
     exit
   end
