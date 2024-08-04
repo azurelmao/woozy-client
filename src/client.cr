@@ -1,56 +1,62 @@
 require "woozy"
 
-struct Woozy::Client
-  def initialize
-    @connection = TCPSocket.new
+class Woozy::Client
+  @connection : TCPSocket?
+
+  def initialize(@username : String)
+    @connection = nil
+    @connection_mutex = Mutex.new
     @packet_channel = Channel(Packet).new
-    @username = "jeb"
 
     @char_channel = Channel(Chars).new
+    @console_history = Array(String).new
     @console_input = Array(Char).new
     @console_cursor = 0
 
     @tick = 0
   end
 
-  def set_terminal_mode : Nil
-    before = Crystal::System::FileDescriptor.tcgetattr STDIN.fd
-    mode = before
-    mode.c_lflag &= ~LibC::ICANON
-    mode.c_lflag &= ~LibC::ECHO
-    mode.c_lflag &= ~LibC::ISIG
-
-    at_exit do
-      Crystal::System::FileDescriptor.tcsetattr(STDIN.fd, LibC::TCSANOW, pointerof(before))
+  def connection(& : TCPSocket ->) : Nil
+    @connection_mutex.synchronize do
+      if (connection = @connection) && !connection.closed?
+        yield connection
+      end
     end
+  end
 
-    if Crystal::System::FileDescriptor.tcsetattr(STDIN.fd, LibC::TCSANOW, pointerof(mode)) != 0
-      raise IO::Error.from_errno "tcsetattr"
+  def connection=(connection : TCPSocket?)
+    @connection_mutex.synchronize do
+      @connection = connection
     end
   end
 
   def server_fiber : Nil
     bytes = Bytes.new(Packet::MaxSize)
 
-    until @connection.closed?
+    while (connection = @connection) && !connection.closed?
       begin
-        bytes_read, _ = @connection.receive(bytes)
-        Log.trace{"packet"}
-        break if bytes_read.zero? # Connection was closed
+        bytes_read, _ = connection.receive(bytes)
+        break if bytes_read.zero?
         packet = Packet.from_bytes(bytes[0...bytes_read].dup)
         spawn @packet_channel.send(packet)
-      rescue ex
-        Log.trace(exception: ex){""}
+      rescue
         break
       end
     end
   end
 
   def handle_packet(packet : Packet) : Nil
-    Log.trace{packet}
     case
     when server_disconnect_packet = packet.server_disconnect_packet
       Log.info &.emit "Disconnected from server", cause: server_disconnect_packet.cause
+    when server_private_message_packet = packet.server_private_message_packet
+      if sender = server_private_message_packet.sender
+        Log.for("#{sender} > #{@username}").info { server_private_message_packet.message }
+      end
+    when server_broadcast_message_packet = packet.server_broadcast_message_packet
+      if sender = server_broadcast_message_packet.sender
+        Log.for(sender).info { server_broadcast_message_packet.message }
+      end
     end
   end
 
@@ -124,7 +130,7 @@ struct Woozy::Client
     print "> #{@console_input.join}\r\e[#{2 + @console_cursor}C"
   end
 
-  def handle_keyboard_action(keyboard_action : KeyboardAction | Chars) : String?
+  def handle_keyboard_action(keyboard_action : KeyboardAction | Chars, & : Array(String) ->)
     case keyboard_action
     when KeyboardAction::Stop
       self.stop
@@ -132,7 +138,11 @@ struct Woozy::Client
       command = @console_input.join
       @console_input.clear
       @console_cursor = 0
-      return command
+      # @console_history << command
+
+      if !command.blank? && !command.empty?
+        yield command.split(' ')
+      end
     when KeyboardAction::Backspace
       if (index = @console_cursor - 1) >= 0
         @console_input.delete_at(index)
@@ -164,44 +174,101 @@ struct Woozy::Client
   def handle_command(command : Array(String)) : Nil
     case command[0]?
     when "help"
-      Log.info { "Available commands: help, hello, stop, join" }
+      self.list_commands
     when "hello"
       Log.info { "world!" }
     when "stop"
       self.stop
     when "join"
-      if (arg = command[1]?)
-        self.join_server(arg)
-      else
-        Log.error { "Invalid IP address!" }
+      unless address = command[1]?
+        Log.error { "join <host>:<port>" }
+        return
+      end
+
+      self.join_server(address)
+    when "msg"
+      unless username = command[1]?
+        Log.error { "msg <username> <message>" }
+        return
+      end
+
+      unless command[2]?
+        Log.error { "msg <username> <message>" }
+        return
+      end
+
+      message = command[2..].join(' ')
+
+      unless message.blank?
+        self.private_message(username, message)
+      end
+    when "say"
+      unless command[1]?
+        Log.error { "say <message>" }
+        return
+      end
+
+      message = command[1..].join(' ')
+
+      unless message.blank?
+        self.broadcast_message(message)
       end
     else
-      Log.error { "Unknown command `#{command.join(' ')}` !" }
+      Log.error { "Unknown command `#{command.join(' ')}`" }
     end
   end
 
+  def list_commands : Nil
+    Log.info { "Available commands: hello, help, stop, join, msg, say" }
+  end
+
+  def private_message(recipient : String, message : String) : Nil
+    self.connection do |connection|
+      Log.for("#{@username} > #{recipient}").info { message } # in the future should appear only when the action succeeded
+      connection.send(ClientPrivateMessagePacket.new(recipient, message))
+    end
+  end
+
+  def broadcast_message(message : String) : Nil
+    self.connection do |connection|
+      Log.for(@username).info { message }
+      connection.send(ClientBroadcastMessagePacket.new(message))
+    end
+  end
+
+  def leave_server : Nil
+    self.connection do |connection|
+      connection.send(ClientDisconnectPacket.new)
+      connection.close
+    end
+    self.connection = nil
+  end
+
   def join_server(address : String) : Nil
+    self.leave_server
+
     uri = URI.parse("tcp://#{address}")
 
     unless host = uri.host
-      Log.error &.emit "Invalid IP address!", address: address
+      Log.error &.emit "Invalid IP address", address: address
       return
     end
 
     begin
-      @connection = TCPSocket.new(host, uri.port)
-      @connection.send(ClientHandshakePacket.new(@username))
+      connection = TCPSocket.new(URI.unwrap_ipv6(host), uri.port)
+      connection.send(ClientHandshakePacket.new(@username))
+      self.connection = connection
+
       spawn self.server_fiber
-      Log.info &.emit "Connected to server", address: @connection.local_address.address
+      Log.info &.emit "Connected to server", address: connection.remote_address.to_s
     rescue
-      Log.error &.emit "Could not connect to IP address!", address: address
+      Log.error &.emit "Could not connect to IP address", address: address
     end
   end
 
   def start : Nil
-    self.set_terminal_mode
-    Log.info { "Client started!" }
-
+    Woozy.set_terminal_mode
+    Log.info { "Client started" }
     self.update_console_input
 
     spawn self.char_fiber
@@ -231,8 +298,9 @@ struct Woozy::Client
     select
     when chars = @char_channel.receive
       if keyboard_action = self.handle_chars(chars)
-        command = self.handle_keyboard_action(keyboard_action)
-        self.handle_command(command.split(' ')) if command && !command.blank? && !command.empty?
+        self.handle_keyboard_action(keyboard_action) do |command|
+          self.handle_command(command)
+        end
       end
     else
     end
@@ -240,17 +308,31 @@ struct Woozy::Client
     @tick += 1
   end
 
-  def stop #: NoReturn
-    Log.info { "Client stopped!" }
+  def stop : NoReturn
+    Log.info { "Client stopped" }
 
-    @connection.send(ClientDisconnectPacket.new)
+    self.connection do |connection|
+      connection.send(ClientDisconnectPacket.new)
+      connection.close
+    end
 
     exit
   end
 end
 
+username = "jeb"
+
+index = 0
+while index < ARGV.size
+  case ARGV[index]
+  when "-u", "--username"
+    username = ARGV[index + 1]
+  end
+  index += 2
+end
+
 begin
-  client = Woozy::Client.new
+  client = Woozy::Client.new(username)
   client.start
 rescue ex
   Log.fatal(exception: ex) { "" }
