@@ -6,7 +6,7 @@ authors:
 
 targets:
   woozy_client:
-    main: src/client.cr
+    main: src/woozy/client.cr
 
 dependencies:
   woozy:
