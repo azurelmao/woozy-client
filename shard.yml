@@ -6,13 +6,18 @@ authors:
 
 targets:
   woozy_client:
-    main: src/woozy/client.cr
+    main: src/main.cr
 
 dependencies:
   woozy:
-    github: "azurelmao/woozy"
-    # path: "../woozy"
+    path: "../woozy"
     version: 0.1.0
+  crystglfw:
+    github: calebuharrison/CrystGLFW
+    branch: master
+  opengl:
+    gitlab: arctic-fox/opengl.cr
+    branch: gl-4.6-core
 
 crystal: '>= 1.11.2'
 

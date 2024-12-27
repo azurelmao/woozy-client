@@ -1,0 +1,32 @@
+lib LibGraphene
+  fun box_alloc = graphene_box_alloc : Box*
+  fun box_free = graphene_box_free(box : Box*)
+  fun box_init = graphene_box_init(box : Box*, min : Point3D*, max : Point3D*) : Box*
+  fun box_init_from_box = graphene_box_init_from_box(box : Box*, src : Box*) : Box*
+  fun box_init_from_points = graphene_box_init_from_points(box : Box*, size : UInt, points : Point3D*) : Box*
+  fun box_init_from_vec3 = graphene_box_init_from_vec3(box : Box*, min : Vec3*, max : Vec3*) : Box*
+  fun box_init_from_vectors = graphene_box_init_from_vectors(box : Box*, size : UInt, vectors : Vec3*) : Box*
+  fun box_equal = graphene_box_equal(box : Box*, other : Box*) : Bool
+  fun box_expand = graphene_box_expand(box : Box*, point : Point3D*, result : Box*)
+  fun box_expand_scalar = graphene_box_expand_scalar(box : Box*, scalar : Float, result : Box*)
+  fun box_expand_vec3 = graphene_box_expand_vec3(box : Box*, vec : Vec3*, result : Box*)
+  fun box_get_min = graphene_box_get_min(box : Box*, min : Point3D*)
+  fun box_get_max = graphene_box_get_max(box : Box*, max : Point3D*)
+  fun box_get_center = graphene_box_get_center(box : Box*, center : Point3D*)
+  fun box_get_depth = graphene_box_get_depth(box : Box*) : Float
+  fun box_get_height = graphene_box_get_height(box : Box*) : Float
+  fun box_get_width = graphene_box_get_width(box : Box*) : Float
+  fun box_get_size = graphene_box_get_size(box : Box*, size : Vec3*)
+  fun box_get_bounding_sphere = graphene_box_get_bounding_sphere(box : Box*, sphere : Sphere*)
+  fun box_get_vertices = graphene_box_get_vertices(box : Box*, vertices : Vec3*)
+  fun box_union = graphene_box_union(box : Box*, other : Box*, result : Box*)
+  fun box_intersection = graphene_box_intersection(box : Box*, other : Box*, result : Box*) : Bool
+  fun box_contains_box = graphene_box_contains_box(box : Box*, other : Box*) : Bool
+  fun box_contains_point = graphene_box_contains_point(box : Box*, point : Point3D*) : Bool
+  fun box_zero = graphene_box_zero : Box*
+  fun box_one = graphene_box_one : Box*
+  fun box_minus_one = graphene_box_minus_one : Box*
+  fun box_one_minus_one = graphene_box_one_minus_one : Box*
+  fun box_empty = graphene_box_empty : Box*
+  fun box_infinite = graphene_box_infinite : Box*
+end
