@@ -217,7 +217,6 @@ class Woozy::ClientActor
 
     @render_actor.stop
     @console_output_actor.stop
-
     @client_config.write
 
     exit

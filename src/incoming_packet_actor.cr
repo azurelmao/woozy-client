@@ -15,7 +15,7 @@ class Woozy::IncomingPacketActor
           bytes = Bytes.new(GC.realloc(bytes.to_unsafe, size), size)
         end
 
-        @socket.read_fully(bytes[0...size])
+        break unless @socket.read_fully?(bytes[0...size])
         break unless packet = Packet.from_id(id, bytes[0...size])
 
         spawn @incoming_packet_channel.send(packet)
